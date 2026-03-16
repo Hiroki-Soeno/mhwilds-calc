@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>MHWilds 火力期待値シミュレータ</title>
+<meta name="description" content="モンスターハンターワイルズ ダメージ計算シミュレータ - 全14武器種対応">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #08080d; overflow-x: hidden; }
+  #root { min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useMemo, useCallback, useRef } = React;
+
+/* ═══ WEAPON DATA (from MH大辞典 Wiki verified) ═══ */
+const WN=["大剣","太刀","片手剣","双剣","ハンマー","狩猟笛","ランス","ガンランス","スラアク","チャアク","操虫棍","弓","ライトボウガン","ヘビィボウガン"];
+const W_ATK=190, W_AFF=5;
+// Base element (R8, 3 same-attribute, normal element)
+// 大剣450,太刀270,片手260,双剣250,ハンマー320,笛320,ランス270,ガンス370,スラアク260,チャアク270,虫棍260,弓210,LBG0,HBG0
+const W_BELEM=[450,270,260,250,320,320,270,370,260,270,260,210,0,0];
+// Production attribute match bonus (+30 or +20)
+const W_PAB=[30,30,20,20,30,30,30,30,20,30,20,20,0,0];
+// Element restoration bonus [Ⅰ,Ⅱ,EX] per weapon
+const WE={0:[80,90,110],1:[50,60,90],2:[30,50,80],3:[20,30,50],4:[50,60,90],5:[50,60,90],6:[50,60,90],7:[50,60,90],8:[30,50,80],9:[50,60,80],10:[30,50,80],11:[30,40,60],12:[0,0,0],13:[0,0,0]};
+// Intensify elem bonus (属性激化) per weapon
+const WIE=[80,50,30,20,50,50,50,50,30,50,30,30,0,0];
+// 連撃 5hit属性加算 [Lv1-5] per weapon (kuroyonhon完全準拠)
+const WRE={0:[80,100,120,160,200],1:[60,80,100,120,140],2:[60,80,100,120,140],3:[40,60,80,100,120],4:[60,80,100,120,140],5:[80,100,120,160,200],6:[60,80,100,120,140],7:[60,80,100,120,140],8:[60,80,100,120,140],9:[60,80,100,120,140],10:[60,80,100,120,140],11:[40,60,80,100,120],12:[0,0,0,0,0],13:[0,0,0,0,0]};
+// 連撃 5hit攻撃力加算 [Lv1-5] per weapon
+const WRA={0:[10,12,14,16,18],1:[8,10,12,15,18],2:[8,10,12,15,18],3:[8,10,12,15,18],4:[8,10,12,15,18],5:[10,12,14,16,18],6:[8,10,12,15,18],7:[8,10,12,15,18],8:[8,10,12,15,18],9:[8,10,12,15,18],10:[8,10,12,15,18],11:[6,7,8,9,10],12:[6,7,8,9,10],13:[6,7,8,9,10]};
+// 会心撃属性 重量武器(大剣0,ハンマー4,狩猟笛5,ヘビィ13) = true
+const ECH=new Set([0,4,5,13]);
+const SH=[{n:"赤",c:"#d32f2f",r:.5,e:.25},{n:"橙",c:"#f57c00",r:.75,e:.5},{n:"黄",c:"#fdd835",r:1,e:.75},{n:"緑",c:"#43a047",r:1.05,e:1},{n:"青",c:"#1e88e5",r:1.2,e:1.0625},{n:"白",c:"#e0e0e0",r:1.32,e:1.15}];
+const ELS=["なし","火","水","雷","氷","龍"];
+
+/* ═══ MOTION VALUE TABLES (macarongamemo ver1.040完全準拠) ═══ */
+const MT={
+0:[ // 大剣
+{n:"縦斬り",m:81,e:1},{n:"溜め斬りⅠ",m:106,e:1.1},{n:"溜め斬りⅡ",m:136,e:1.3},{n:"溜め斬りⅢ",m:176,e:1.5},
+{n:"強溜めⅠ",m:111,e:1.4},{n:"強溜めⅡ",m:144,e:1.6},{n:"強溜めⅢ",m:187,e:1.8},
+{n:"真溜めⅢ(本体)",m:209,e:2.5},{n:"薙ぎ払い",m:42,e:1},{n:"強薙ぎ払いⅢ",m:134,e:2.2},
+{n:"飛込み薙ぎ払いⅢ",m:167,e:3.1},{n:"斬り上げ",m:38,e:1},{n:"タックルⅢ",m:48,e:1},
+],
+1:[ // 太刀 (ver1.020+準拠)
+{n:"縦斬り",m:24,e:1},{n:"斬り下がり",m:22,e:1},{n:"気刃斬りⅠ",m:31,e:1},{n:"気刃斬りⅡ",m:30,e:1},
+{n:"気刃斬りⅢ(3hit計)",m:67,e:3},{n:"気刃大回転斬り",m:38,e:1},
+{n:"赤刃斬りⅠ(2hit計)",m:49,e:1},{n:"赤刃斬りⅡ(2hit計)",m:33,e:2.1},{n:"赤刃斬りⅢ(3hit計)",m:103,e:3.3},
+{n:"居合抜刀気刃斬り(赤)",m:39,e:1},{n:"気刃兜割(赤per hit)",m:23,e:1},
+{n:"練気解放無双斬り(15hit計)",m:261,e:15},{n:"見切り斬り",m:11,e:1},{n:"赤刃旋転斬",m:60,e:1},
+],
+2:[ // 片手剣 (macarongamemo ver1.040準拠)
+{n:"斬り下ろし",m:19,e:1.3},{n:"横斬り",m:18,e:1.3},{n:"斬り上げ",m:18,e:1},{n:"回転斬り",m:41,e:1},
+{n:"突進斬り",m:28,e:1},{n:"バックナックル",m:27,e:1},{n:"盾攻撃",m:16,e:1},
+{n:"溜め斬り",m:40,e:1},{n:"反撃斬り",m:55,e:1.5},{n:"旋刈り",m:65,e:1},
+{n:"JR通常(per hit平均)",m:19,e:0.8},{n:"JRジャスト(per hit平均)",m:44,e:1},
+],
+3:[ // 双剣
+{n:"二段斬り(per hit)",m:9,e:0.6},{n:"車輪斬り(per hit)",m:9,e:0.7},{n:"鬼人逆手斬り",m:10,e:0.6},
+{n:"鬼人二段斬り(per hit)",m:10,e:0.6},{n:"鬼人六段斬り(per hit)",m:13,e:0.6},
+{n:"鬼人突進連斬(per hit)",m:7,e:0.7},{n:"鬼人連斬Ⅰ(per hit)",m:15,e:1},
+{n:"鬼人連斬Ⅱ(per hit)",m:12,e:0.7},{n:"乱舞Ⅰ~Ⅲ(per hit平均)",m:15,e:0.8},
+{n:"スクリュースライサー(per hit)",m:9,e:0.9},{n:"空中回転乱舞(per hit)",m:10,e:0.6},
+],
+4:[ // ハンマー (ver1.020準拠)
+{n:"横振り",m:23,e:1},{n:"縦振りⅠ",m:41,e:1},{n:"縦振りⅡ",m:45,e:1},{n:"アッパー",m:95,e:1.3},
+{n:"叩きつけ4",m:90,e:1.1},{n:"溜め振り回し",m:25,e:1.1},{n:"溜めアッパー",m:70,e:1.2},
+{n:"溜め叩きつけ(2hit計)",m:150,e:2.5},{n:"渾身溜めアッパー",m:130,e:1},
+{n:"渾身溜め叩きつけ(3hit計)",m:240,e:3},{n:"回転攻撃(per hit)",m:18,e:2.5},
+],
+5:[ // 狩猟笛 (ver1.040準拠)
+{n:"前方攻撃",m:32,e:1},{n:"左ぶん回し",m:33,e:1},{n:"右ぶん回し",m:33,e:1},{n:"後方攻撃",m:46,e:1},
+{n:"叩きつけ(2hit計)",m:56,e:2},{n:"連音攻撃(2hit計)",m:40,e:2},{n:"演奏攻撃",m:35,e:1},
+{n:"奏撃1(ジャスト)",m:40,e:1},{n:"奏撃2(ジャスト)",m:50,e:1},{n:"重ね掛け(ジャスト計)",m:95,e:2},
+],
+6:[ // ランス (ver1.040準拠)
+{n:"中段突きⅠ/Ⅱ",m:26,e:1.2},{n:"中段突きⅢ",m:35,e:1.4},{n:"上段突きⅠ/Ⅱ",m:31,e:1},
+{n:"上段突きⅢ",m:42,e:1},{n:"なぎ払い",m:80,e:1},{n:"大返し突き(2hit計)",m:55,e:2},
+{n:"渾身返し突き(2hit計)",m:55,e:2},{n:"渾身返し突き【穿】(3hit計)",m:88,e:3},
+{n:"突進(per hit)",m:17,e:0.5},{n:"フィニッシュ突き",m:55,e:1},
+],
+7:[ // ガンランス (ver1.011準拠)
+{n:"踏込み突き上げ",m:38,e:1},{n:"水平突きⅠ/Ⅱ",m:24,e:1},
+{n:"斬り上げ",m:38,e:1},{n:"叩きつけ",m:57,e:1},{n:"薙ぎ払い",m:40,e:1.5},
+{n:"ガード突き",m:18,e:1},{n:"竜杭砲(杭)",m:20,e:0},{n:"フルバースト(砲撃)",m:10,e:0},
+],
+8:[ // スラアク (ver1.020準拠)
+{n:"斧:縦斬り",m:45,e:1},{n:"斧:横斬り",m:23,e:1},{n:"斧:斬り下がり",m:42,e:1},
+{n:"斧:相殺斬り上げ",m:50,e:1},{n:"斧:強化叩きつけ(2hit計)",m:87,e:2},
+{n:"剣:縦斬り",m:33,e:1},{n:"剣:右斬り上げ",m:42,e:1},{n:"剣:左斬り上げ",m:48,e:1},
+{n:"剣:二連斬り(per hit)",m:24,e:1},{n:"属性解放F(tick per hit)",m:12,e:0.7},
+{n:"圧縮解放斬り(4hit計)",m:121,e:4},{n:"フルリリース(10hit計)",m:367,e:10},
+],
+9:[ // チャアク (ver1.020準拠)
+{n:"剣:牽制斬り",m:15,e:1},{n:"剣:斬り返し",m:18,e:1},{n:"剣:回転斬り",m:30,e:1},
+{n:"剣:高圧属性斬り",m:48,e:1},{n:"盾突き(2hit計)",m:21,e:2},
+{n:"斧:突進叩きつけ",m:48,e:1},{n:"斧:縦斬り",m:54,e:1},
+{n:"高出力(本体)",m:68,e:1},{n:"超高出力(本体2hit計)",m:94,e:2},
+{n:"ビン爆発(榴弾Lv3)",m:7,e:0},{n:"ビン爆発(強属性Lv3)",m:3,e:3},
+],
+10:[ // 操虫棍 (ver1.021準拠)
+{n:"飛び込み斬り",m:28,e:0.8},{n:"けさ斬り",m:18,e:0.8},{n:"二段斬り(2hit計)",m:42,e:1.5},
+{n:"移動斬り",m:24,e:0.8},{n:"なぎ払い",m:22,e:0.8},{n:"叩きつけ",m:26,e:0.8},
+{n:"強化けさ斬り(2hit計)",m:46,e:1.6},{n:"強化二段斬り(3hit計)",m:84,e:2.4},
+{n:"飛円斬り(2hit計)",m:70,e:2},{n:"急襲斬り(4hit計)",m:80,e:4},
+{n:"強化急襲斬り(6hit計)",m:144,e:6},{n:"ジャンプ斬り",m:18,e:1},
+],
+11:[ // 弓 (macarongamemo準拠, per arrow表記)
+{n:"溜め1(per矢)",m:10,e:0.4},{n:"溜め2(per矢)",m:11,e:0.7},{n:"溜め3(per矢)",m:12,e:1},
+{n:"剛射1(per矢)",m:10,e:0.4},{n:"剛射2(per矢)",m:11,e:0.67},{n:"剛射3(per矢)",m:12,e:0.8},
+{n:"剛連射3(per矢)",m:15,e:1},{n:"竜の一矢(per hit)",m:25,e:0.3},{n:"竜の千々矢(per hit)",m:25,e:0.5},
+{n:"CSループ(溜3→剛射3 per矢)",m:12,e:0.9},
+],
+12:[ // ライトボウガン (base×0.8通常貫通/×0.7散弾)
+{n:"通常弾Lv1(per pellet)",m:14,e:0},{n:"通常弾Lv2(per pellet)",m:19,e:0},{n:"通常弾Lv3(per pellet)",m:26,e:0},
+{n:"貫通弾Lv1(per hit)",m:9,e:0},{n:"貫通弾Lv2(per hit)",m:10,e:0},{n:"貫通弾Lv3(per hit)",m:10,e:0},
+{n:"散弾Lv1(per pellet)",m:9,e:0},{n:"散弾Lv3(per pellet)",m:13,e:0},
+{n:"属性弾(per hit)",m:1,e:4},
+],
+13:[ // ヘビィボウガン (base×1.0)
+{n:"通常弾Lv1(per pellet)",m:17,e:0},{n:"通常弾Lv2(per pellet)",m:24,e:0},{n:"通常弾Lv3(per pellet)",m:32,e:0},
+{n:"貫通弾Lv1(per hit)",m:11,e:0},{n:"貫通弾Lv2(per hit)",m:12,e:0},{n:"貫通弾Lv3(per hit)",m:12,e:0},
+{n:"散弾Lv1(per pellet)",m:13,e:0},{n:"散弾Lv3(per pellet)",m:18,e:0},
+{n:"属性弾(per hit)",m:1,e:5},
+],
+};
+// 武器種別デフォルトMV/属性補正（代表的な立ち回りの加重平均）
+const W_DEF_MV=[110,30,22,12,70,38,30,35,35,25,24,12,20,25];
+const W_DEF_EM=[1.5,1.0,1.15,0.7,1.15,1,1.1,1.1,1,1,0.85,0.9,0,0];
+
+/* ═══ RESTORATION BONUS ═══ */
+const BI=["none","atk","aff","elem","shrp"];
+const BN={"none":"─","atk":"基礎攻撃力","aff":"会心率","elem":"属性","shrp":"斬れ味/装填数"};
+const BA=[{n:"Ⅰ",v:5},{n:"Ⅱ",v:6},{n:"Ⅲ",v:9},{n:"EX",v:12}];
+const BC=[{n:"Ⅰ",v:5},{n:"Ⅱ",v:6},{n:"Ⅲ",v:8},{n:"EX",v:10}];
+const BS=[{n:"Ⅰ",v:0},{n:"EX",v:0}];
+function gET(w){const e=WE[w]||[0,0,0];return[{n:"Ⅰ",v:e[0]},{n:"Ⅱ",v:e[1]},{n:"EX",v:e[2]}];}
+function gT(id,w){return id==="atk"?BA:id==="aff"?BC:id==="elem"?gET(w):id==="shrp"?BS:[];}
+
+/* ═══ INTENSIFY ═══ */
+const INN=["なし","攻撃激化","会心激化","属性激化"];
+function gIB(id,w){if(id===1)return{a:10,af:-15,el:0,lb:"攻撃+10 / 会心-15%"};if(id===2)return{a:-10,af:10,el:0,lb:"会心+10% / 攻撃-10"};if(id===3)return{a:0,af:-5,el:WIE[w]||0,lb:`属性+${WIE[w]||0} / 会心-5%`};return{a:0,af:0,el:0,lb:""};}
+
+/* ═══ SERIES & GROUP ═══ */
+const SEG=[
+  {n:"なし",lvs:[{n:"─",c:0,rF:0,aF:0,eF:0,eM:1,rM:1}]},
+  {n:"黒蝕一体(自発感染)",lvs:[{n:"Lv1(2部位)",c:1,rF:0,aF:0,eF:0,eM:1,rM:1,cd:"muga"},{n:"Lv2(攻+15)",c:2,rF:15,aF:0,eF:0,eM:1,rM:1,cd:"muga"}]},
+  {n:"蒼雷一閃",lvs:[{n:"Lv1(20秒)",c:1,rF:0,aF:15,eF:0,eM:1,rM:1},{n:"Lv2(30秒)",c:2,rF:0,aF:15,eF:0,eM:1,rM:1}]},
+  {n:"雷顎竜の闘志",lvs:[{n:"Lv1",c:1,rF:0,aF:10,eF:0,eM:1,rM:1}]},
+  {n:"千刃竜の闘志",lvs:[{n:"Lv1",c:1,rF:0,aF:10,eF:0,eM:1,rM:1}]},
+  {n:"レゾナンス",lvs:[{n:"Lv1",c:1,rF:5,aF:15,eF:0,eM:1,rM:1}]},
+  {n:"オメガレゾナンス(ファー)",lvs:[{n:"Lv1",c:1,rF:10,aF:0,eF:0,eM:1,rM:1},{n:"Lv2",c:2,rF:20,aF:0,eF:0,eM:1,rM:1}]},
+  {n:"オメガレゾナンス(ニアー)",lvs:[{n:"Lv1",c:1,rF:0,aF:20,eF:0,eM:1,rM:1},{n:"Lv2",c:2,rF:0,aF:40,eF:0,eM:1,rM:1}]},
+  {n:"宣戦呼応",lvs:[{n:"Lv1",c:1,rF:0,aF:0,eF:20,eM:1.2,rM:1,cd:"rage"},{n:"Lv2",c:2,rF:0,aF:0,eF:40,eM:1.3,rM:1,cd:"rage"}]},
+  {n:"暗黒騎士の証",lvs:[{n:"Lv1",c:1,rF:15,aF:0,eF:0,eM:1,rM:1}]},
+  {n:"連撃強化",lvs:[{n:"Lv1",c:1,rF:8,aF:0,eF:0,eM:1,rM:1,cd:"chai"},{n:"Lv2",c:2,rF:18,aF:0,eF:0,eM:1,rM:1,cd:"chai"}]},
+];
+const GR=[{n:"なし",rF:0,aF:0,rM:1},{n:"ヌシの魂(根性【果敢】)",rF:0,aF:0,rM:1.05},{n:"不屈(1乙)",rF:0,aF:0,rM:1.10},{n:"滑走強化(+30%)",rF:0,aF:30,rM:1}];
+
+/* ═══ SKILLS ═══ */
+const SK=[
+  {n:"攻撃",mx:5,c:"W",d:l=>`攻+${[0,3,5,7,8,9][l]}${l>=4?` ×1.0${[0,0,0,0,2,4][l]}`:""}`,a:(l,s)=>{s.rF+=[0,3,5,7,8,9][l];if(l>=4)s.rM*=[1,1,1,1,1.02,1.04][l];}},
+  {n:"見切り",mx:5,c:"W",d:l=>`会心+${[0,4,8,12,16,20][l]}%`,a:(l,s)=>{s.aF+=[0,4,8,12,16,20][l];}},
+  {n:"超会心",mx:5,c:"W",d:l=>`×${[1.25,1.28,1.31,1.34,1.37,1.40][l]}`,a:(l,s)=>{s.cM=[1.25,1.28,1.31,1.34,1.37,1.40][l];}},
+  {n:"攻めの守勢",mx:3,c:"W",d:l=>`×${[1,1.05,1.10,1.15][l]}`,a:(l,s)=>{if(s.cd.offG)s.rM*=[1,1.05,1.10,1.15][l];}},
+  {n:"チャージマスター",mx:3,c:"W",d:l=>`属×武器種依存`,a:(l,s)=>{if(s.cd.chrg){const w=s.cd.wt;const t=w===11?[1,1.05,1.10,1.15]:[1,1.15,1.20,1.25];s.eM*=t[l];}}},
+  {n:"会心撃【属性】",mx:3,c:"W",d:l=>`属×武器種依存`,a:(l,s)=>{const h=ECH.has(s.cd.wt);s.ecM=h?[1,1.07,1.14,1.21][l]:[1,1.05,1.10,1.15][l];}},
+  {n:"挑戦者",mx:5,c:"A",d:l=>`攻+${[0,4,8,12,16,20][l]} 会心+${[0,3,5,7,10,15][l]}%`,a:(l,s)=>{if(s.cd.rage){s.rF+=[0,4,8,12,16,20][l];s.aF+=[0,3,5,7,10,15][l];}}},
+  {n:"弱点特効",mx:5,c:"A",d:l=>`弱点+${[0,5,10,15,20,30][l]}% 傷+${[0,3,5,10,15,20][l]}%`,a:(l,s)=>{if(s.cd.weak){s.aF+=[0,5,10,15,20,30][l];if(s.cd.wound)s.aF+=[0,3,5,10,15,20][l];}}},
+  {n:"渾身",mx:3,c:"A",d:l=>`会心+${[0,10,20,30][l]}%`,a:(l,s)=>{if(s.cd.kons)s.aF+=[0,10,20,30][l];}},
+  {n:"力の解放",mx:5,c:"A",d:l=>`会心+${l*10}%`,a:(l,s)=>{if(s.cd.mMig)s.aF+=l*10;}},
+  {n:"無我の境地",mx:3,c:"A",d:l=>`会心+${[0,3,6,10][l]}%`,a:(l,s)=>{if(s.cd.muga)s.aF+=[0,3,6,10][l];}},
+  {n:"連撃",mx:5,c:"A",d:l=>`攻/属+武器種依存`,a:(l,s)=>{if(s.cd.chai&&l>0){const w=s.cd.wt!=null?s.cd.wt:0;s.rF+=(WRA[w]||WRA[1])[l-1];s.eF+=(WRE[w]||WRE[1])[l-1];}}},
+  {n:"逆襲",mx:3,c:"A",d:l=>`攻+${[0,10,15,25][l]}`,a:(l,s)=>{if(s.cd.gyak)s.rF+=[0,10,15,25][l];}},
+  {n:"巧撃",mx:5,c:"A",d:l=>`攻+${[0,10,15,20,25,30][l]}`,a:(l,s)=>{if(s.cd.koug)s.rF+=[0,10,15,20,25,30][l];}},
+  {n:"フルチャージ",mx:5,c:"A",d:l=>`攻+${[0,3,6,10,15,20][l]}`,a:(l,s)=>{if(s.cd.full)s.rF+=[0,3,6,10,15,20][l];}},
+  {n:"逆恨み",mx:5,c:"A",d:l=>`攻+${[0,5,10,15,20,25][l]}`,a:(l,s)=>{if(s.cd.red)s.rF+=[0,5,10,15,20,25][l];}},
+  {n:"死中に活",mx:1,c:"A",d:l=>`攻+${l*10}`,a:(l,s)=>{if(s.cd.shic)s.rF+=l*10;}},
+  {n:"災禍転福",mx:3,c:"A",d:l=>{const a=["","軽×1.05/重×1.10","軽×1.10/重×1.20","軽×1.15/重×1.30"];return`属性${a[l]}`;},a:(l,s)=>{if(s.cd.saik&&l>0){const lt=new Set([1,2,3,6,10,11]);const h=lt.has(s.cd.wt)?[1,1.05,1.10,1.15]:[1,1.10,1.20,1.30];s.eM*=h[l];}}},
+  {n:"攻勢",mx:5,c:"A",d:l=>`攻+${[0,6,8,10,12,15][l]}${l>=2?` 会心+${[0,0,5,10,15,20][l]}%`:""}`,a:(l,s)=>{if(s.cd.kose){s.rF+=[0,6,8,10,12,15][l];s.aF+=[0,0,5,10,15,20][l];}}},
+  ...["火","水","雷","氷","龍"].map(el=>({n:`${el}属性強化`,mx:3,c:"W",d:l=>`${el}+${[0,40,50,60][l]}${l>=2?` ×${[0,0,1.1,1.2][l]}`:""}`,a:(l,s)=>{if(s.cd.elem===el){s.eF+=[0,40,50,60][l];if(l>=2)s.eM*=[1,1,1.1,1.2][l];}}})),
+];
+
+/* ═══ STYLES ═══ */
+const $={
+  app:{minHeight:"100vh",background:"linear-gradient(170deg,#08080d,#0f0d18 50%,#180c0c)",color:"#e8e0d4",fontFamily:"system-ui,'Noto Sans JP',sans-serif",fontSize:14,padding:"10px 8px 40px",maxWidth:480,margin:"0 auto"},
+  sec:{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,180,80,0.08)",borderRadius:10,marginBottom:10,overflow:"hidden"},
+  sh:{fontSize:13,fontWeight:700,color:"#ffb347",padding:"11px 14px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",userSelect:"none"},
+  sb:{padding:"2px 12px 12px"},
+  lb:{fontSize:11,color:"#a89880",marginBottom:2,display:"block",fontWeight:600},
+  ip:{width:"100%",background:"rgba(0,0,0,0.35)",border:"1px solid rgba(255,180,80,0.08)",borderRadius:6,color:"#ffe0b0",padding:"8px 10px",fontSize:15,outline:"none",boxSizing:"border-box",fontFamily:"monospace"},
+  sl:{width:"100%",background:"rgba(0,0,0,0.4)",border:"1px solid rgba(255,180,80,0.08)",borderRadius:6,color:"#ffe0b0",padding:"8px 6px",fontSize:12,outline:"none",boxSizing:"border-box",WebkitAppearance:"none"},
+  r2:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8},
+  tg:on=>({padding:"7px 8px",borderRadius:6,fontSize:11,fontWeight:600,cursor:"pointer",border:on?"1px solid rgba(255,152,0,0.4)":"1px solid rgba(255,255,255,0.04)",background:on?"rgba(255,152,0,0.12)":"rgba(0,0,0,0.1)",color:on?"#ffd54f":"#494949",flex:"1 1 auto",textAlign:"center",minWidth:0}),
+  rs:{background:"linear-gradient(135deg,rgba(255,107,53,0.06),rgba(255,215,0,0.03))",border:"1px solid rgba(255,180,80,0.15)",borderRadius:10,padding:12,marginBottom:10},
+  bg:{fontSize:36,fontWeight:900,fontFamily:"monospace",background:"linear-gradient(135deg,#ff6b35,#ffd700)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",lineHeight:1},
+  sR:{display:"flex",justifyContent:"space-between",padding:"3px 0",borderBottom:"1px solid rgba(255,255,255,0.02)"},
+  sL:{fontSize:11,color:"#8a7e6b"},sV:{fontSize:12,fontWeight:700,color:"#ffe0b0",fontFamily:"monospace"},
+  warn:{fontSize:10,color:"#ff5252",padding:"4px 8px",background:"rgba(255,50,50,0.06)",borderRadius:4,marginTop:4},
+  hp:{fontSize:10,color:"#504a3e",marginTop:1},
+  spB:(on,c)=>({width:28,height:16,borderRadius:4,border:on?"2px solid #fff":"1px solid rgba(255,255,255,0.06)",background:c,cursor:"pointer",opacity:on?1:.3}),
+  fin:{background:"rgba(255,200,100,0.04)",border:"1px solid rgba(255,180,80,0.12)",borderRadius:8,padding:10,marginTop:8},
+};
+
+/* ═══ COMPONENTS ═══ */
+function Sec({title,icon,children,open:d=true}){const[o,setO]=useState(d);return(<div style={$.sec}><div style={$.sh} onClick={()=>setO(!o)}><span>{icon} {title}</span><span style={{color:"#665",fontSize:14}}>{o?"▾":"▸"}</span></div>{o&&<div style={$.sb}>{children}</div>}</div>);}
+function NI({label,value,onChange,help}){
+  const[s,setS]=useState(String(value));
+  const prev=useRef(value);
+  if(prev.current!==value){prev.current=value;if(Number(s)!==value)setS(String(value));}
+  const handle=e=>{const raw=e.target.value;setS(raw);if(raw!==''&&raw!=='-'&&raw!=='.'){const n=Number(raw);if(!isNaN(n))onChange(n);}};
+  const blur=()=>{if(s===''||s==='-'||isNaN(Number(s))){setS(String(value));}else{setS(String(Number(s)));}};
+  return(<div><label style={$.lb}>{label}</label><input type="number" style={$.ip} value={s} onChange={handle} onBlur={blur}/>{help&&<div style={$.hp}>{help}</div>}</div>);
+}
+function SI({label,value,onChange,options}){return(<div><label style={$.lb}>{label}</label><select style={$.sl} value={value} onChange={e=>onChange(e.target.value)}>{options.map((o,i)=><option key={i} value={typeof o==="string"?o:o.v}>{typeof o==="string"?o:o.l}</option>)}</select></div>);}
+function SkRow({sk,lv,set}){return(<div style={{display:"flex",alignItems:"center",padding:"5px 0",borderBottom:"1px solid rgba(255,255,255,0.02)",gap:6}}><div style={{flex:1,fontSize:12,color:"#d4c8b0",lineHeight:1.2}}>{sk.n}{lv>0&&<div style={{color:"#ff9800",fontSize:10}}>{sk.d(lv)}</div>}</div><select style={{...$.sl,width:60,padding:"6px 4px",fontSize:12,textAlign:"center"}} value={lv} onChange={e=>set(Number(e.target.value))}>{Array.from({length:sk.mx+1},(_,i)=><option key={i} value={i}>{i===0?"─":`Lv${i}`}</option>)}</select></div>);}
+
+/* ═══ MAIN ═══ */
+function App(){
+  const[wt,setWt]=useState(3);
+  const[raw,setRaw]=useState(W_ATK);
+  const[bAff,setBAff]=useState(W_AFF);
+  const[sharp,setSharp]=useState(5);
+  const[elem,setElem]=useState("なし");
+  const[eVal,setEVal]=useState(W_BELEM[3]);
+  const[mv,setMv]=useState(W_DEF_MV[3]);
+  const[eMot,setEMot]=useState(W_DEF_EM[3]);
+  const[rHz,setRHz]=useState(45);
+  const[eHz,setEHz]=useState(20);
+
+  // Production (default: 0, match OFF)
+  const[pAtk,setPAtk]=useState(0);
+  const[pAff,setPAff]=useState(0);
+  const[pElem,setPElem]=useState(false);
+  const fixPA=(v)=>{const n=Number(v);setPAtk(n);if(n+pAff>3)setPAff(3-n);}
+  const fixPC=(v)=>{const n=Number(v);setPAff(n);if(pAtk+n>3)setPAtk(3-n);}
+
+  // Restoration 5 slots
+  const[slots,setSlots]=useState(()=>Array(5).fill(null).map(()=>({type:"none",tier:0})));
+  const setSlot=useCallback((i,v)=>setSlots(p=>{const n=[...p];n[i]=v;return n;}),[]);
+  const[intens,setIntens]=useState(0);
+
+  const[se1,setSe1]=useState({g:0,l:0});
+  const[se2,setSe2]=useState({g:0,l:0});
+  const[grpSk,setGrpSk]=useState(0);
+  const seC1=SEG[se1.g].lvs[se1.l]?.c||0, seC2=SEG[se2.g].lvs[se2.l]?.c||0;
+  const seLv=seC1+seC2, seOver=seLv>3;
+
+  const[C,setC]=useState({weak:true,wound:false,rage:true,kons:true,mMig:false,muga:false,chai:true,gyak:false,koug:false,full:false,red:false,shic:false,offG:false,chrg:false,saik:false,kose:false,elem:"なし"});
+  const tg=useCallback(k=>setC(p=>({...p,[k]:!p[k]})),[]);
+  const[sLv,setSLv]=useState(()=>Object.fromEntries(SK.map(s=>[s.n,0])));
+  const setSk=useCallback((n,l)=>setSLv(p=>({...p,[n]:l})),[]);
+
+  // Weapon-specific buffs
+  const[wB,setWB]=useState({tR:0,dM:false,hS:false,hM:0,hC:false,hE:0,hK:false,sA:false,iE:0,bV:0});
+  const wBs=(k,v)=>setWB(p=>({...p,[k]:v}));
+
+  // Item buffs (複数ソース照合済み, 同一グループ内は最大値のみ適用)
+  const[iB,setIB]=useState({gofu:true,tane:0,kusuri:0,fun:false,niku:false,osasoi:false});
+  const iBs=(k,v)=>setIB(p=>({...p,[k]:v}));
+  const itemF=useMemo(()=>(iB.gofu?6:0)+[0,10,25,10][iB.tane]+[0,5,7,5][iB.kusuri]+(iB.fun?10:0)+(iB.niku?2:0)+(iB.osasoi?5:0),[iB]);
+
+  const changeWt=(v)=>{const n=Number(v);setWt(n);setRaw(W_ATK);setBAff(W_AFF);setEVal(W_BELEM[n]||0);setMv(W_DEF_MV[n]);setEMot(W_DEF_EM[n]);if(n>=12){setElem("なし");setC(p=>({...p,elem:"なし"}));}setWB({tR:0,dM:false,hS:false,hM:0,hC:false,hE:0,hK:false,sA:false,iE:0,bV:0});};
+
+  const intB=useMemo(()=>gIB(intens,wt),[intens,wt]);
+  const pElV=pElem?(W_PAB[wt]||0):0;
+
+  const exW=useMemo(()=>{
+    const c={};slots.forEach(s=>{if(s.type==="none")return;const t=gT(s.type,wt)[s.tier];if(t?.n==="EX")c[s.type]=(c[s.type]||0)+1;});
+    return Object.entries(c).filter(([,v])=>v>2).map(([t,v])=>`${BN[t]}のEXは2枠まで（現在${v}枠）`);
+  },[slots,wt]);
+
+  const art=useMemo(()=>{
+    const t={atk:0,aff:0,elem:0};
+    slots.forEach(s=>{if(s.type==="none"||s.type==="shrp")return;const tv=gT(s.type,wt)[s.tier];if(tv){if(s.type==="atk")t.atk+=tv.v;else if(s.type==="aff")t.aff+=tv.v;else if(s.type==="elem")t.elem+=tv.v;}});return t;
+  },[slots,wt]);
+
+  const wS=useMemo(()=>({
+    atk:raw+pAtk*5+art.atk+intB.a,
+    aff:bAff+pAff*5+art.aff+intB.af,
+    elem:eVal+pElV+art.elem+intB.el
+  }),[raw,bAff,eVal,pAtk,pAff,pElV,art,intB]);
+
+  const R=useMemo(()=>{
+    const sh=wt>=11?{r:1,e:1}:SH[sharp],cd={...C,elem,wt};
+    const bR=raw+pAtk*5+art.atk+intB.a;
+    const bA=bAff+pAff*5+art.aff+intB.af;
+    const bE=eVal+pElV+art.elem+intB.el;
+    const s={rF:0,rM:1,aF:0,cM:1.25,eF:0,eM:1,ecM:1.0,cd};
+    // Item buffs (加算補正 = 乗算の外)
+    s.rF+=itemF;
+    SK.forEach(sk=>{const l=sLv[sk.n];if(l>0)sk.a(l,s);});
+    [se1,se2].forEach(({g,l})=>{const sr=SEG[g].lvs[l];if(!sr||sr.c===0)return;const srA=(!sr.cd||(sr.cd==="muga"?cd.muga:sr.cd==="rage"?cd.rage:cd[sr.cd]));if(sr.rF&&srA)s.rF+=sr.rF;if(sr.aF&&srA)s.aF+=sr.aF;if(sr.eF&&srA)s.eF+=sr.eF;if(sr.eM&&sr.eM!==1&&srA)s.eM*=sr.eM;if(sr.rM&&sr.rM!==1&&srA)s.rM*=sr.rM;});
+    const gr=GR[grpSk];if(gr.rM)s.rM*=gr.rM;if(gr.aF)s.aF+=gr.aF;if(gr.rF)s.rF+=gr.rF;
+    // Weapon-specific buffs
+    if(wt===1){s.rM*=[1,1.05,1.075,1.10][wB.tR];}// 太刀練気
+    if(wt===3&&wB.dM){s.rM*=1.15;s.eM*=1.3;}// 双剣身躱し(TU2後: 物理1.15/属性1.3)
+    if(wt===5){if(wB.hS)s.rM*=1.2;s.rM*=[1,1.03,1.045,1.05,1.10][wB.hM];if(wB.hC)s.aF+=15;s.eM*=[1,1.08,1.10][(wB.hE||0)];if(wB.hK){s.rM*=1.1;s.aF+=25;}}// 狩猟笛
+    if(wt===8&&wB.sA)s.rF+=10;// スラアク斧強化
+    if(wt===10){s.rM*=[1,1.1,1.15][wB.iE];}// 操虫棍エキス
+    // 狂竜症克服: 基本効果+15%会心（黒蝕一体とは独立）
+    if(cd.muga)s.aF+=15;
+    // 弓ビン: ダメージ乗算（斬れ味と同じ位置＝加算スキル込み全体にかかる）
+    const bowVM=wt===11?[1,1.4,1.3][wB.bV]:1;
+    const tR=bR*s.rM+s.rF,eA=Math.min(100,Math.max(-100,bA+s.aF));
+    const cF=eA>=0?1+(eA/100)*(s.cM-1):1+(eA/100)*.25,efr=tR*cF*sh.r*bowVM;
+    const tE=elem!=="なし"?bE*s.eM+s.eF:0,eCF=eA>=0?1+(eA/100)*(s.ecM-1):1,efe=tE*eCF*sh.e;
+    const ph=efr*(mv/100)*(rHz/100),el=efe/10*(eHz/100)*eMot;
+    return{tR:tR.toFixed(1),efr:efr.toFixed(1),eA,cM:s.cM,tE:tE.toFixed(1),efe:efe.toFixed(1),ph:ph.toFixed(1),el:el.toFixed(1),tot:(ph+el).toFixed(1)};
+  },[sharp,elem,eVal,mv,eMot,rHz,eHz,raw,bAff,pAtk,pAff,pElV,art,intB,se1,se2,grpSk,C,sLv,wt,wB,itemF]);
+
+  const cds=[["弱点部位","weak"],["傷口","wound"],["怒り","rage"],["スタミナ満タン","kons"],["力の解放","mMig"],["狂竜症克服","muga"],["連撃中","chai"],["逆襲","gyak"],["巧撃","koug"],["体力MAX","full"],["赤ゲージ","red"],["状態異常中","shic"],["ジャストガード","offG"],["溜め攻撃","chrg"],["災禍転福中","saik"],["攻勢中(敵状態異常)","kose"]];
+
+  return(
+    <div style={$.app}>
+      <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;600;700;900&display=swap" rel="stylesheet"/>
+      <div style={{textAlign:"center",marginBottom:12,padding:"4px 0"}}><h1 style={{fontSize:18,fontWeight:900,background:"linear-gradient(135deg,#ff6b35,#ffd700)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",margin:0,letterSpacing:1}}>⚔ MH WILDS 火力計算</h1><div style={{fontSize:9,color:"#5a5448",letterSpacing:3,marginTop:2}}>DAMAGE EXPECTATION SIMULATOR</div></div>
+
+      {/* Result */}
+      <div style={$.rs}>
+        <div style={{textAlign:"center",marginBottom:8}}>
+          <div style={{fontSize:10,color:"#8a7e6b",marginBottom:2}}>期待ダメージ / 1Hit</div>
+          <div style={$.bg}>{R.tot}</div>
+          <div style={{fontSize:11,color:"#666",marginTop:3}}>物理 {R.ph} + 属性 {R.el}</div>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0 12px"}}>
+          {[["EFR",R.efr],["EFE",R.efe],["補正後攻撃力",R.tR],["補正後属性",R.tE],["実効会心率",R.eA+"%",R.eA>=100],["会心倍率","×"+R.cM.toFixed(2)]].map(([l,v,h],i)=><div key={i} style={$.sR}><span style={$.sL}>{l}</span><span style={{...$.sV,color:h?"#ff9800":"#ffe0b0"}}>{v}</span></div>)}
+        </div>
+      </div>
+
+      {/* Weapon */}
+      <Sec title="武器ステータス" icon="🗡">
+        <div style={{marginBottom:8}}><SI label="武器種" value={wt} onChange={changeWt} options={WN.map((w,i)=>({v:i,l:w}))}/></div>
+        <div style={$.r2}>
+          <NI label="攻撃力（倍率）" value={raw} onChange={setRaw} help={`素体: ${W_ATK}`}/>
+          <NI label="会心率 (%)" value={bAff} onChange={setBAff} help={`素体: ${W_AFF}%`}/>
+        </div>
+        {wt<11&&<div style={{marginBottom:8}}><label style={$.lb}>斬れ味</label><div style={{display:"flex",gap:4,marginTop:4}}>{SH.map((s,i)=><button key={i} style={$.spB(sharp===i,s.c)} onClick={()=>setSharp(i)}/>)}</div><div style={$.hp}>{SH[sharp].n}: 物理×{SH[sharp].r} / 属性×{SH[sharp].e}</div></div>}
+        <div style={$.r2}>
+          <SI label="属性" value={elem} onChange={v=>{setElem(v);setC(p=>({...p,elem:v}));if(v!=="なし"&&eVal===0)setEVal(W_BELEM[wt]||0);}} options={ELS}/>
+          <NI label="属性値" value={eVal} onChange={setEVal} help={`${WN[wt]}素体: ${W_BELEM[wt]}`}/>
+        </div>
+      </Sec>
+
+      {/* Weapon-specific buffs - only show if weapon has them */}
+      {[1,3,5,8,10,11].includes(wt)&&<Sec title={`${WN[wt]}固有補正`} icon="⚡" open={true}>
+        {wt===1&&<div>
+          <SI label="練気ゲージ色（物理乗算・ver1.020以降）" value={wB.tR} onChange={v=>wBs("tR",Number(v))} options={[{v:0,l:"なし (×1.00)"},{v:1,l:"白 (×1.05)"},{v:2,l:"黄 (×1.075)"},{v:3,l:"赤 (×1.10)"}]}/>
+          <div style={$.hp}>MH大辞典Wiki検証: ver1.020で白1.025→1.05, 黄1.050→1.075に上方修正</div>
+        </div>}
+        {wt===3&&<div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}><button style={$.tg(wB.dM)} onClick={()=>wBs("dM",!wB.dM)}>{wB.dM?"✓ ":""}鬼人身躱し状態 (攻撃×1.15 / 属性×1.3)</button></div>
+          <div style={$.hp}>TU2調整後: 威力強化量↓(×1.2→×1.15) / 属性補正強化量↑(×1.2→×1.3)</div>
+        </div>}
+        {wt===5&&<div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:6}}>
+            <button style={$.tg(wB.hS)} onClick={()=>wBs("hS",!wB.hS)}>{wB.hS?"✓ ":""}自分強化 (攻撃×1.2)</button>
+          </div>
+          <SI label="攻撃旋律" value={wB.hM} onChange={v=>wBs("hM",Number(v))} options={[{v:0,l:"なし"},{v:1,l:"攻撃小 (×1.03)"},{v:2,l:"攻撃小・追 (×1.045)"},{v:3,l:"攻撃大 (×1.05)"},{v:4,l:"攻撃大・追 (×1.10)"}]}/>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:6}}>
+            <button style={$.tg(wB.hC)} onClick={()=>wBs("hC",!wB.hC)}>{wB.hC?"✓ ":""}会心旋律 (+15%)</button>
+            <button style={$.tg(wB.hK)} onClick={()=>wBs("hK",!wB.hK)}>{wB.hK?"✓ ":""}響玉 (攻×1.1 会心+25)</button>
+          </div>
+          <div style={{marginTop:6}}><SI label="属性旋律" value={wB.hE||0} onChange={v=>wBs("hE",Number(v))} options={[{v:0,l:"なし"},{v:1,l:"属性UP (×1.08)"},{v:2,l:"属性UP・追 (×1.10)"}]}/></div>
+          <div style={$.hp}>kuroyonhonメモ準拠。自分強化は加算前に×1.2（乗算）。響玉は攻×1.1+会心+25</div>
+        </div>}
+        {wt===8&&<div>
+          <div style={{display:"flex",gap:6}}><button style={$.tg(wB.sA)} onClick={()=>wBs("sA",!wB.sA)}>{wB.sA?"✓ ":""}斧強化状態 (攻撃+10)</button></div>
+          <div style={$.hp}>macarongamemo検証: 加算+10</div>
+        </div>}
+        {wt===10&&<div>
+          <SI label="猟虫エキス" value={wB.iE} onChange={v=>wBs("iE",Number(v))} options={[{v:0,l:"なし"},{v:1,l:"赤白 (×1.10)"},{v:2,l:"赤白橙 (×1.15)"}]}/>
+          <div style={$.hp}>macarongamemo検証: 攻撃力乗算</div>
+        </div>}
+        {wt===11&&<div>
+          <SI label="弓ビン" value={wB.bV} onChange={v=>wBs("bV",Number(v))} options={[{v:0,l:"なし"},{v:1,l:"接撃ビン (×1.40)"},{v:2,l:"強撃ビン (×1.30)"}]}/>
+          <div style={$.hp}>macarongamemo/game8準拠: 接撃×1.4 / 強撃×1.3（製品版〜）</div>
+        </div>}
+      </Sec>}
+
+      {/* Item Buffs */}
+      <Sec title="アイテムバフ" icon="🧪" open={false}>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
+          <button style={$.tg(iB.gofu)} onClick={()=>iBs("gofu",!iB.gofu)}>{iB.gofu?"✓ ":""}力の護符 (+6)</button>
+          <button style={$.tg(iB.fun)} onClick={()=>iBs("fun",!iB.fun)}>{iB.fun?"✓ ":""}鬼人の粉塵 (+10)</button>
+        </div>
+        <div style={$.r2}>
+          <SI label="種グループ" value={iB.tane} onChange={v=>iBs("tane",Number(v))} options={[{v:0,l:"なし"},{v:1,l:"怪力の種 (+10)"},{v:2,l:"怪力の丸薬 (+25)"},{v:3,l:"鬼人弾 (+10)"}]}/>
+          <SI label="薬グループ" value={iB.kusuri} onChange={v=>iBs("kusuri",Number(v))} options={[{v:0,l:"なし"},{v:1,l:"鬼人薬 (+5)"},{v:2,l:"鬼人薬G (+7)"},{v:3,l:"ニトロダケ (+5)"}]}/>
+        </div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:4}}>
+          <button style={$.tg(iB.niku)} onClick={()=>iBs("niku",!iB.niku)}>{iB.niku?"✓ ":""}肉料理 (+2)</button>
+          <button style={$.tg(iB.osasoi)} onClick={()=>iBs("osasoi",!iB.osasoi)}>{iB.osasoi?"✓ ":""}食事のお誘い (+5)</button>
+        </div>
+        <div style={{padding:"6px 8px",background:"rgba(0,0,0,0.1)",borderRadius:6,display:"flex",gap:12,justifyContent:"center",fontSize:11,marginTop:4}}>
+          <span style={{color:"#ff8a50"}}>合計攻撃力 <b>+{itemF}</b></span>
+        </div>
+        <div style={$.hp}>※ 同一グループ内は最大値のみ適用。護符/肉料理/お誘いは独立枠で重複可。全て加算補正(乗算の外)。</div>
+      </Sec>
+
+      {/* Artian */}
+      <Sec title="巨戟アーティア" icon="🔱" open={false}>
+        <SI label="激化タイプ" value={intens} onChange={v=>setIntens(Number(v))} options={INN.map((n,i)=>({v:i,l:n}))}/>
+        {intens>0&&<div style={{fontSize:11,color:"#ff9800",marginTop:4,marginBottom:6,padding:"4px 8px",background:"rgba(255,152,0,0.06)",borderRadius:4}}>自動補正: {intB.lb}</div>}
+
+        <div style={{marginTop:8,borderTop:"1px solid rgba(255,180,80,0.06)",paddingTop:8}}>
+          <div style={{fontSize:11,color:"#ffb347",fontWeight:700,marginBottom:4}}>生産ボーナス（パーツ3枠 + 属性一致）</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:6}}>
+            <SI label="攻撃力増強(各+5)" value={pAtk} onChange={fixPA} options={[0,1,2,3].map(i=>({v:i,l:`${i}個 (+${i*5})`}))}/>
+            <SI label="会心率増強(各+5%)" value={pAff} onChange={fixPC} options={[0,1,2,3].filter(i=>i+pAtk<=3).map(i=>({v:i,l:`${i}個 (+${i*5}%)`}))}/>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:8,padding:"4px 0"}}>
+            <button style={$.tg(pElem)} onClick={()=>setPElem(!pElem)}>
+              {pElem?"✓ ":""}属性一致ボーナス (+{W_PAB[wt]||0})
+            </button>
+          </div>
+          <div style={{padding:"6px 8px",background:"rgba(0,0,0,0.1)",borderRadius:6,display:"flex",gap:12,justifyContent:"center",fontSize:11,marginTop:4}}>
+            <span style={{color:"#ff8a50"}}>攻撃 <b>+{pAtk*5}</b></span>
+            <span style={{color:"#80b0ff"}}>会心 <b>+{pAff*5}%</b></span>
+            <span style={{color:"#b080ff"}}>属性 <b>+{pElV}</b></span>
+          </div>
+        </div>
+
+        <div style={{marginTop:8,borderTop:"1px solid rgba(255,180,80,0.06)",paddingTop:8}}>
+          <div style={{fontSize:11,color:"#ffb347",fontWeight:700,marginBottom:4}}>復元ボーナス（5枠）</div>
+          <div style={{fontSize:10,color:"#665e50",marginBottom:6}}>属性値は「{WN[wt]}」基準。同一EXは2枠まで。</div>
+          {slots.map((sl,i)=>{
+            const tiers=gT(sl.type,wt);const tv=tiers[sl.tier];
+            const isEX=tv?.n==="EX";
+            const oEX=slots.filter((x,j)=>j!==i&&x.type===sl.type&&x.type!=="none"&&gT(x.type,wt)[x.tier]?.n==="EX").length;
+            const ov=isEX&&oEX>=2;
+            return(<div key={i} style={{display:"grid",gridTemplateColumns:"18px 1fr 80px 38px",gap:"2px 4px",alignItems:"center",padding:"4px 0",borderBottom:"1px solid rgba(255,255,255,0.02)"}}>
+              <div style={{fontSize:11,color:"#665e50",fontWeight:700}}>{i+1}</div>
+              <select style={$.sl} value={sl.type} onChange={e=>setSlot(i,{type:e.target.value,tier:0})}>{BI.map(id=><option key={id} value={id}>{BN[id]}</option>)}</select>
+              {tiers.length>0?<select style={{...$.sl,color:ov?"#ff5252":"#ffe0b0"}} value={sl.tier} onChange={e=>setSlot(i,{...sl,tier:Number(e.target.value)})}>{tiers.map((t,j)=><option key={j} value={j}>{t.n} (+{t.v})</option>)}</select>:<div style={{color:"#444",fontSize:11,paddingLeft:4}}>─</div>}
+              <div style={{fontSize:12,color:ov?"#ff5252":"#ffd54f",fontFamily:"monospace",fontWeight:700,textAlign:"right"}}>{tv&&sl.type!=="shrp"&&sl.type!=="none"?`+${tv.v}`:sl.type==="shrp"?"斬↑":"─"}</div>
+            </div>);
+          })}
+          {exW.map((w,i)=><div key={i} style={$.warn}>⚠ {w}</div>)}
+          <div style={{marginTop:6,padding:"6px 8px",background:"rgba(0,0,0,0.1)",borderRadius:6,display:"flex",gap:12,justifyContent:"center",fontSize:11}}>
+            <span style={{color:"#ff8a50"}}>攻撃 <b>+{art.atk}</b></span>
+            <span style={{color:"#80b0ff"}}>会心 <b>+{art.aff}%</b></span>
+            <span style={{color:"#b080ff"}}>属性 <b>+{art.elem}</b></span>
+          </div>
+        </div>
+
+        <div style={$.fin}>
+          <div style={{fontSize:11,fontWeight:700,color:"#ffb347",marginBottom:6}}>📋 仕上がりステータス（スキル反映前）</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,textAlign:"center"}}>
+            <div><div style={{fontSize:10,color:"#8a7e6b"}}>攻撃力</div><div style={{fontSize:18,fontWeight:900,color:"#ffe0b0",fontFamily:"monospace"}}>{wS.atk}</div></div>
+            <div><div style={{fontSize:10,color:"#8a7e6b"}}>会心率</div><div style={{fontSize:18,fontWeight:900,color:wS.aff<0?"#ff5252":"#ffe0b0",fontFamily:"monospace"}}>{wS.aff}%</div></div>
+            <div><div style={{fontSize:10,color:"#8a7e6b"}}>属性値</div><div style={{fontSize:18,fontWeight:900,color:"#ffe0b0",fontFamily:"monospace"}}>{elem!=="なし"?wS.elem:"─"}</div></div>
+          </div>
+          <div style={{fontSize:9,color:"#504a3e",marginTop:4,textAlign:"center"}}>素体{W_ATK}/{W_AFF}%/属性{W_BELEM[wt]} + 生産 + 復元 + 激化</div>
+        </div>
+      </Sec>
+
+      <Sec title="シリーズ / グループスキル" icon="🛡" open={false}>
+        {[["①",se1,setSe1,seC2],["②",se2,setSe2,seC1]].map(([label,se,setSe,otherC])=>{
+          const grp=SEG[se.g];const remain=3-otherC;
+          return(<div key={label} style={{marginBottom:8,padding:"6px 8px",background:"rgba(0,0,0,0.08)",borderRadius:6}}>
+            <div style={{fontSize:11,color:"#ffb347",fontWeight:700,marginBottom:4}}>シリーズ{label}</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 80px",gap:6}}>
+              <select style={$.sl} value={se.g} onChange={e=>{const ng=Number(e.target.value);const nl=SEG[ng].lvs.length>0?0:0;const nc=SEG[ng].lvs[nl]?.c||0;if(nc>remain){setSe({g:0,l:0});}else{setSe({g:ng,l:nl});}}}>{SEG.map((x,i)=><option key={i} value={i}>{x.n}</option>)}</select>
+              {grp.lvs.length>1?<select style={$.sl} value={se.l} onChange={e=>setSe({...se,l:Number(e.target.value)})}>{grp.lvs.map((lv,j)=>lv.c<=remain?<option key={j} value={j}>{lv.n} (部位{lv.c*2})</option>:null)}</select>:<div style={{fontSize:11,color:"#8a7e6b",padding:"8px 4px"}}>{grp.lvs[0]?.n||"─"}{grp.lvs[0]?.c?` (部位${grp.lvs[0].c*2})`:""}</div>}
+            </div>
+          </div>);
+        })}
+        <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:8}}>
+          <div style={{fontSize:11,color:seOver?"#ff5252":"#8a7e6b"}}>合計部位: <b style={{color:seOver?"#ff5252":"#ffd54f"}}>{seLv*2}</b> / 6 (Lv合計 {seLv}/3)</div>
+          {seOver&&<div style={{fontSize:10,color:"#ff5252"}}>⚠ 装備枠超過</div>}
+        </div>
+        <div style={{marginTop:4}}>
+          <SI label="グループスキル" value={grpSk} onChange={v=>setGrpSk(Number(v))} options={GR.map((x,i)=>({v:i,l:x.n}))}/>
+        </div>
+        <div style={{fontSize:10,color:"#665e50",marginTop:6}}>※ Lv1=2部位/Lv2=4部位。防具5部位のうち合計6部位分(Lv合計3)まで併用可。</div>
+      </Sec>
+
+      <Sec title="戦闘条件" icon="🎯">
+        <div style={$.r2}><NI label="モーション値" value={mv} onChange={setMv}/><NI label="属性補正値" value={eMot} onChange={setEMot} help="技別の属性倍率"/></div>
+        <div style={$.r2}><NI label="物理肉質" value={rHz} onChange={setRHz} help="上位モンスター弱点部位40~50。傷口で+15~20"/><NI label="属性肉質" value={eHz} onChange={setEHz} help="上位モンスター弱点属性20~25"/></div>
+
+        {MT[wt]&&<div style={{marginTop:4,marginBottom:8}}>
+          <div style={{fontSize:11,color:"#ffb347",fontWeight:700,marginBottom:4,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+            <span>📋 {WN[wt]}モーション表 <span style={{fontWeight:400,color:"#665e50"}}>（タップで自動入力）</span></span>
+            <button onClick={()=>{setMv(W_DEF_MV[wt]);setEMot(W_DEF_EM[wt]);}} style={{fontSize:10,padding:"3px 8px",borderRadius:4,border:"1px solid rgba(255,180,80,0.2)",background:"rgba(255,180,80,0.06)",color:"#ffb347",cursor:"pointer",whiteSpace:"nowrap"}}>⟲ 平均に戻す</button>
+          </div>
+          <div style={{maxHeight:200,overflowY:"auto",border:"1px solid rgba(255,180,80,0.06)",borderRadius:6}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+              <thead><tr style={{position:"sticky",top:0,background:"#1a1520",zIndex:1}}>
+                <th style={{textAlign:"left",padding:"5px 6px",color:"#a89880",fontWeight:600,borderBottom:"1px solid rgba(255,180,80,0.1)"}}>技名</th>
+                <th style={{textAlign:"right",padding:"5px 6px",color:"#ff8a50",fontWeight:600,borderBottom:"1px solid rgba(255,180,80,0.1)",width:40}}>MV</th>
+                <th style={{textAlign:"right",padding:"5px 6px",color:"#b080ff",fontWeight:600,borderBottom:"1px solid rgba(255,180,80,0.1)",width:40}}>属補</th>
+              </tr></thead>
+              <tbody>{MT[wt].map((t,i)=>{
+                const sel=mv===t.m&&eMot===t.e;
+                return(<tr key={i} onClick={()=>{setMv(t.m);setEMot(t.e);}} style={{cursor:"pointer",background:sel?"rgba(255,152,0,0.1)":"transparent",borderBottom:"1px solid rgba(255,255,255,0.02)"}}>
+                  <td style={{padding:"4px 6px",color:sel?"#ffd54f":"#d4c8b0"}}>{t.n}</td>
+                  <td style={{textAlign:"right",padding:"4px 6px",color:"#ff8a50",fontFamily:"monospace",fontWeight:600}}>{t.m}</td>
+                  <td style={{textAlign:"right",padding:"4px 6px",color:"#b080ff",fontFamily:"monospace",fontWeight:600}}>×{t.e}</td>
+                </tr>);
+              })}</tbody>
+            </table>
+          </div>
+          <div style={{fontSize:9,color:"#504a3e",marginTop:3}}>※ macarongamemo ver1.040準拠。multi-hit技はper hit or 合計表記。デフォ値は代表的立ち回りの加重平均</div>
+        </div>}
+
+        <label style={{...$.lb,marginBottom:6}}>状態トグル</label>
+        <div style={{display:"flex",flexWrap:"wrap",gap:4}}>{cds.map(([l,k])=><button key={k} style={$.tg(C[k])} onClick={()=>tg(k)}>{C[k]?"✓ ":""}{l}</button>)}</div>
+      </Sec>
+
+      <Sec title="スキル" icon="💎" open={false}>
+        <div style={{fontSize:10,color:"#ff9800",fontWeight:700,marginBottom:4}}>武器スキル</div>
+        {SK.filter(s=>s.c==="W").map(sk=><SkRow key={sk.n} sk={sk} lv={sLv[sk.n]} set={l=>setSk(sk.n,l)}/>)}
+        <div style={{fontSize:10,color:"#80b0ff",fontWeight:700,marginTop:8,marginBottom:4}}>防具スキル</div>
+        {SK.filter(s=>s.c==="A").map(sk=><SkRow key={sk.n} sk={sk} lv={sLv[sk.n]} set={l=>setSk(sk.n,l)}/>)}
+      </Sec>
+
+      <div style={{textAlign:"center",padding:"6px 0",fontSize:9,color:"#3a3630",lineHeight:1.6}}>
+        ※ 属性素体値はMH大辞典Wiki検証データ準拠（通常属性基準）<br/>
+        ※ 毒/爆破は-150、麻痺/睡眠は-200で手動調整してください<br/>
+        ※ モーション値/属性補正はmacarongamemo最新版(ver1.040)完全準拠<br/>
+        ※ 連撃/会心撃属性/チャージマスターは武器種別倍率対応<br/>
+        ※ 武器固有補正: 太刀練気(大辞典Wiki)/双剣身躱し(kuroyonhon)/笛旋律+自分強化/スラアク斧強化/虫棍エキス/弓ビン<br/>
+        ※ 肉質デフォ: 物理45/属性20（ジンダハド/ヌエグドラ/レダウ等の上位モンスター弱点部位基準）
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+</script>
+</body>
+</html>
