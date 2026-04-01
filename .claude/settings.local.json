@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh repo:*)",
+      "Bash(brew install:*)",
+      "Bash(gh auth:*)",
+      "mcp__Claude_Preview__preview_start",
+      "Read(//opt/homebrew/bin/**)",
+      "Read(//usr/local/bin/**)",
+      "Bash(ln -sfn \"/Users/soeki/Library/CloudStorage/GoogleDrive-h.soeno@speakbuddy.jp/マイドライブ/Claude Code/mhwilds-calc\" /tmp/mhwilds-calc)",
+      "Read(//tmp/**)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8765/index.html)",
+      "Bash(kill 43361)",
+      "Bash(chmod +x /tmp/mhwilds-calc/serve.sh)",
+      "Bash(brew list:*)",
+      "Bash(gh org:*)",
+      "Bash(gh api:*)"
+    ]
+  }
+}

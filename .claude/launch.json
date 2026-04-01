@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mhwilds",
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": ["/tmp/mhwilds-calc/serve.sh"],
+      "port": 8765
+    }
+  ]
+}
